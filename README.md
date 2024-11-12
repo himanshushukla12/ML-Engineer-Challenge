@@ -21,7 +21,7 @@ python ./utils/download_tiny_imagenet.py
 
 ### Instructions 📃
 
-1. Select a complex computer vision model from Torch Hub (e.g., Dinov2).
+1. Select a Vision Transformer (ViT) based computer vision model from Torch Hub (e.g., Dinov2).
 2. Prepare a small subset of ImageNet images for inference.
 3. Apply dynamic quantisation to the model.
 4. Measure and compare the inference time of the original and quantized models.
@@ -58,7 +58,7 @@ Objective: Convert a trained model to TensorRT format and serialize it in ONNX f
 
 ### Instructions 📃
 
-1. Train or use a pre-trained model (it can be the model from Part 1 or another model).
+1. Use the pre-trained model from Part 1.
 2. Export the model to ONNX format.
 3. Convert the ONNX model to TensorRT using TensorRT tools.
 4. Measure the inference time of the TensorRT model on an Nvidia GPU.
