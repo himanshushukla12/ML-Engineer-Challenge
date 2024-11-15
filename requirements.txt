@@ -1,0 +1,8 @@
+optuna
+onnx
+tensorrt
+jupyter
+matplotlib
+scikit-learn
+xFormers 
+bitsandbytes
