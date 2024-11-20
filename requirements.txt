@@ -6,3 +6,5 @@ matplotlib
 scikit-learn
 xFormers 
 bitsandbytes
+onnxruntime-gpu
+onnxmltools
