@@ -46,5 +46,12 @@ The best trial achieved an accuracy of **1.0** with the following parameters:
 - Used Optuna for hyperparameter optimization with 20 trials
 
 ## Part 3: TensorRT and ONNX Conversion (Ongoing)
-some JIT issues, can complete part3
+Here are the results:
+```bash
+Performance Summary:
+PyTorch mean latency: 2.53 ms
+TensorRT mean latency: 4.22 ms
+Speedup: 0.60x
+```
 
+![results](part3/perf_comparison.png)
