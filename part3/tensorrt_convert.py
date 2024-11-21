@@ -5,8 +5,11 @@ import pycuda.driver as cuda
 import pycuda.autoinit
 import numpy as np
 import logging
+import time
+import matplotlib.pyplot as plt
 from pathlib import Path
 
+# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -28,27 +31,20 @@ class TensorRTInference:
         self.cuda_outputs = []
         self.bindings = []
         
-        # TensorRT to numpy dtype mapping
-        dtype_mapping = {
-            trt.float32: np.float32,
-            trt.float16: np.float16,
-            trt.int32: np.int32,
-            trt.int8: np.int8,
-            trt.bool: np.bool
-        }
-        
-        # Allocate buffers for input and output
+        # Allocate buffers
         for idx in range(self.engine.num_io_tensors):
             tensor_name = self.engine.get_tensor_name(idx)
             tensor_shape = self.engine.get_tensor_shape(tensor_name)
             tensor_dtype = self.engine.get_tensor_dtype(tensor_name)
             
-            # Get numpy dtype
-            if tensor_dtype not in dtype_mapping:
-                raise ValueError(f"Unsupported dtype: {tensor_dtype}")
-            np_dtype = dtype_mapping[tensor_dtype]
+            # Convert TensorRT dtype to numpy dtype
+            if tensor_dtype == trt.float32:
+                np_dtype = np.float32
+            elif tensor_dtype == trt.float16:
+                np_dtype = np.float16
+            else:
+                np_dtype = np.float32  # Default to float32
             
-            # Calculate size and allocate buffers
             size = trt.volume(tensor_shape)
             host_mem = cuda.pagelocked_empty(size, np_dtype)
             cuda_mem = cuda.mem_alloc(host_mem.nbytes)
@@ -63,44 +59,45 @@ class TensorRTInference:
 
     def infer(self, input_data):
         try:
-            # Set input shape using correct API
+            # Set input shape
             input_name = self.engine.get_tensor_name(0)
             self.context.set_input_shape(input_name, (1, 3, 224, 224))
             
             # Copy input data to host buffer
             np.copyto(self.host_inputs[0], input_data.ravel())
             
-            # Transfer input to device
+            # Transfer to device
             cuda.memcpy_htod_async(self.cuda_inputs[0], self.host_inputs[0], self.stream)
             
-            # Execute inference with correct API
+            # Execute inference
             self.context.execute_async_v3(stream_handle=self.stream.handle)
             
-            # Transfer output back to host
+            # Transfer back to host
             cuda.memcpy_dtoh_async(self.host_outputs[0], self.cuda_outputs[0], self.stream)
             
-            # Synchronize stream
+            # Synchronize
             self.stream.synchronize()
             
             # Get output shape
             output_name = self.engine.get_tensor_name(1)
             output_shape = self.engine.get_tensor_shape(output_name)
             if output_shape == ():
-                output_shape = (1, 384)  # DinoV2 output size
+                output_shape = (1, 384)
                 
             return self.host_outputs[0].reshape(output_shape)
             
         except Exception as e:
             logger.error(f"Inference failed: {str(e)}")
             raise
+
     def __del__(self):
         try:
-            # Clean up CUDA resources
             del self.stream
             for cuda_mem in self.cuda_inputs + self.cuda_outputs:
                 cuda_mem.free()
         except Exception as e:
             logger.warning(f"Error during cleanup: {str(e)}")
+
 def load_dinov2(device):
     model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
     model.eval()
@@ -139,24 +136,20 @@ def convert_to_trt(onnx_path, trt_path):
                 raise RuntimeError(f"ONNX parsing failed: {'; '.join(error_msgs)}")
         
         config = builder.create_builder_config()
-        config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)  # 1GB
+        config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)
         
-        # Enable FP16 if available
         if builder.platform_has_fast_fp16:
             config.set_flag(trt.BuilderFlag.FP16)
             logger.info("Enabled FP16 precision")
         
-        # Set optimization profile
         profile = builder.create_optimization_profile()
         profile.set_shape('input', (1, 3, 224, 224), (1, 3, 224, 224), (1, 3, 224, 224))
         config.add_optimization_profile(profile)
         
-        # Build engine
         engine_bytes = builder.build_serialized_network(network, config)
         if engine_bytes is None:
             raise RuntimeError("Failed to build TensorRT engine")
         
-        # Save engine
         with open(trt_path, 'wb') as f:
             f.write(engine_bytes)
             
@@ -165,6 +158,30 @@ def convert_to_trt(onnx_path, trt_path):
     except Exception as e:
         logger.error(f"TensorRT conversion failed: {str(e)}")
         raise
+
+def visualize_performance(pytorch_times, trt_times, save_path="perf_comparison.png"):
+    plt.figure(figsize=(10, 6))
+    
+    models = ['PyTorch', 'TensorRT']
+    times = [np.mean(pytorch_times), np.mean(trt_times)]
+    errors = [np.std(pytorch_times), np.std(trt_times)]
+    
+    bars = plt.bar(models, times, yerr=errors, capsize=5)
+    plt.title('Inference Time Comparison')
+    plt.ylabel('Time (ms)')
+    
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2., height,
+                f'{height:.2f}ms', ha='center', va='bottom')
+    
+    speedup = times[0] / times[1]
+    plt.text(0.5, max(times) * 1.1, f'Speedup: {speedup:.2f}x',
+             ha='center', va='bottom')
+    
+    plt.tight_layout()
+    plt.savefig(save_path)
+    logger.info(f"Performance plot saved to {save_path}")
 
 def benchmark_inference(engine_path, n_warmup=50, n_iter=100):
     try:
@@ -178,21 +195,12 @@ def benchmark_inference(engine_path, n_warmup=50, n_iter=100):
         # Benchmark
         times = []
         for _ in range(n_iter):
-            start = cuda.Event()
-            end = cuda.Event()
-            
-            start.record()
+            start = time.perf_counter()
             trt_model.infer(input_data)
-            end.record()
-            
-            end.synchronize()
-            times.append(start.time_till(end))
+            times.append((time.perf_counter() - start) * 1000)
         
-        return {
-            'mean': np.mean(times),
-            'std': np.std(times),
-            'median': np.median(times)
-        }
+        return times
+        
     except Exception as e:
         logger.error(f"Benchmarking failed: {str(e)}")
         raise
@@ -200,9 +208,8 @@ def benchmark_inference(engine_path, n_warmup=50, n_iter=100):
 def main():
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for TensorRT conversion")
-        
-    device = torch.device("cuda")
     
+    device = torch.device("cuda")
     output_dir = Path("models")
     output_dir.mkdir(exist_ok=True)
     
@@ -210,27 +217,41 @@ def main():
     trt_path = output_dir / "dinov2_vits14.trt"
     
     try:
-        logger.info("Starting conversion pipeline...")
-        
+        # Load and convert model
         model = load_dinov2(device)
-        logger.info("Model loaded successfully")
-        
         export_to_onnx(model, device, onnx_path)
-        logger.info("ONNX export completed")
-        
         convert_to_trt(onnx_path, trt_path)
-        logger.info("TensorRT conversion completed")
         
-        metrics = benchmark_inference(trt_path)
-        print("\nTensorRT Inference Performance:")
-        print(f"Mean latency: {metrics['mean']:.2f} ms")
-        print(f"Std deviation: {metrics['std']:.2f} ms")
-        print(f"Median latency: {metrics['median']:.2f} ms")
+        # Benchmark PyTorch
+        pytorch_times = []
+        input_data = torch.randn(1, 3, 224, 224, device=device)
+        
+        # Warmup
+        for _ in range(50):
+            with torch.no_grad():
+                model(input_data)
+        
+        # Benchmark
+        for _ in range(100):
+            start = time.perf_counter()
+            with torch.no_grad():
+                model(input_data)
+            pytorch_times.append((time.perf_counter() - start) * 1000)
+        
+        # Benchmark TensorRT
+        trt_times = benchmark_inference(trt_path)
+        
+        # Visualize results
+        visualize_performance(pytorch_times, trt_times)
+        
+        print("\nPerformance Summary:")
+        print(f"PyTorch mean latency: {np.mean(pytorch_times):.2f} ms")
+        print(f"TensorRT mean latency: {np.mean(trt_times):.2f} ms")
+        print(f"Speedup: {np.mean(pytorch_times)/np.mean(trt_times):.2f}x")
         
     except Exception as e:
         logger.error(f"Pipeline failed: {str(e)}")
         raise
-
 
 if __name__ == "__main__":
     main()
