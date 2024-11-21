@@ -46,4 +46,5 @@ The best trial achieved an accuracy of **1.0** with the following parameters:
 - Used Optuna for hyperparameter optimization with 20 trials
 
 ## Part 3: TensorRT and ONNX Conversion (Ongoing)
+some JIT issues, can complete part3
 
