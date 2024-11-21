@@ -55,3 +55,6 @@ Speedup: 0.60x
 ```
 
 ![results](part3/perf_comparison.png)
+**Note**: `tensorrt_convert.py` used to generate the results
+
+**PS**: And i used chatGPT for this part, as this was very new for me to work on, as my expertize relies on LLMs (as of now)
